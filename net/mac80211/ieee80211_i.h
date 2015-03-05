@@ -58,13 +58,24 @@ struct ieee80211_local;
 #define IEEE80211_UNSET_POWER_LEVEL	INT_MIN
 
 /*
- * Some APs experience problems when working with U-APSD. Decrease the
- * probability of that happening by using legacy mode for all ACs but VO.
- * The AP that caused us trouble was a Cisco 4410N. It ignores our
- * setting, and always treats non-VO ACs as legacy.
+ * Some APs experience problems when working with U-APSD. Decreasing the
+ * probability of that happening by using legacy mode for all ACs but VO isn't
+ * enough.
+ *
+ * Cisco 4410N originally forced us to enable VO by default only because it
+ * treated non-VO ACs as legacy.
+ *
+ * However some APs (notably Netgear R7000) silently reclassify packets to
+ * different ACs. Since u-APSD ACs require trigger frames for frame retrieval
+ * clients would never see some frames (e.g. ARP responses) or would fetch them
+ * accidentally after a long time.
+ *
+ * It makes little sense to enable u-APSD queues by default because it needs
+ * userspace applications to be aware of it to actually take advantage of the
+ * possible additional powersavings. Implicitly depending on driver autotrigger
+ * frame support doesn't make much sense.
  */
-#define IEEE80211_DEFAULT_UAPSD_QUEUES \
-	IEEE80211_WMM_IE_STA_QOSINFO_AC_VO
+#define IEEE80211_DEFAULT_UAPSD_QUEUES 0
 
 #define IEEE80211_DEFAULT_MAX_SP_LEN		\
 	IEEE80211_WMM_IE_STA_QOSINFO_SP_ALL
@@ -867,7 +878,6 @@ struct ieee80211_sub_if_data {
 	u8 needed_rx_chains;
 	enum ieee80211_smps_mode smps_mode;
 
-	int user_power_level; /* in dBm */
 	int ap_power_level; /* in dBm */
 
 	bool radar_required;
@@ -1597,8 +1607,7 @@ int ieee80211_add_virtual_monitor(struct ieee80211_local *local);
 void ieee80211_del_virtual_monitor(struct ieee80211_local *local);
 
 bool __ieee80211_recalc_txpower(struct ieee80211_sub_if_data *sdata);
-void ieee80211_recalc_txpower(struct ieee80211_sub_if_data *sdata,
-			      bool update_bss);
+void ieee80211_recalc_txpower(struct ieee80211_sub_if_data *sdata);
 
 static inline bool ieee80211_sdata_running(struct ieee80211_sub_if_data *sdata)
 {
@@ -1943,6 +1952,8 @@ u8 *ieee80211_ie_build_ht_oper(u8 *pos, struct ieee80211_sta_ht_cap *ht_cap,
 			       u16 prot_mode);
 u8 *ieee80211_ie_build_vht_cap(u8 *pos, struct ieee80211_sta_vht_cap *vht_cap,
 			       u32 cap);
+u8 *ieee80211_ie_build_vht_oper(u8 *pos, struct ieee80211_sta_vht_cap *vht_cap,
+				const struct cfg80211_chan_def *chandef);
 int ieee80211_parse_bitrates(struct cfg80211_chan_def *chandef,
 			     const struct ieee80211_supported_band *sband,
 			     const u8 *srates, int srates_len, u32 *rates);
