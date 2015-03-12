@@ -66,8 +66,8 @@ static int ath10k_send_key(struct ath10k_vif *arvif,
 		arg.key_cipher = WMI_CIPHER_WEP;
 		break;
 	case WLAN_CIPHER_SUITE_AES_CMAC:
-		/* this one needs to be done in software */
-		return 1;
+		WARN_ON(1);
+		return -EINVAL;
 	default:
 		ath10k_warn(ar, "cipher %d is not supported\n", key->cipher);
 		return -EOPNOTSUPP;
@@ -856,7 +856,7 @@ static int ath10k_monitor_recalc(struct ath10k *ar)
 	lockdep_assert_held(&ar->conf_mutex);
 
 	should_start = ar->monitor ||
-		       !ath10k_mac_should_disable_promisc(ar);
+		       !ath10k_mac_should_disable_promisc(ar) ||
 		       test_bit(ATH10K_CAC_RUNNING, &ar->dev_flags);
 
 	ath10k_dbg(ar, ATH10K_DBG_MAC,
@@ -1230,9 +1230,10 @@ static void ath10k_control_beaconing(struct ath10k_vif *arvif,
 	if (!info->enable_beacon) {
 		ath10k_vdev_stop(arvif);
 
-		spin_lock_bh(&arvif->ar->data_lock);
 		arvif->is_started = false;
 		arvif->is_up = false;
+
+		spin_lock_bh(&arvif->ar->data_lock);
 		ath10k_mac_vif_beacon_free(arvif);
 		spin_unlock_bh(&arvif->ar->data_lock);
 
@@ -1466,6 +1467,11 @@ static void ath10k_mac_vif_ap_csa_count_down(struct ath10k_vif *arvif)
 	struct ieee80211_vif *vif = arvif->vif;
 	int ret;
 
+	lockdep_assert_held(&arvif->ar->conf_mutex);
+
+	if (WARN_ON(!test_bit(WMI_SERVICE_BEACON_OFFLOAD, ar->wmi.svc_map)))
+		return;
+
 	if (arvif->vdev_type != WMI_VDEV_TYPE_AP)
 		return;
 
@@ -1501,6 +1507,75 @@ static void ath10k_mac_vif_ap_csa_work(struct work_struct *work)
 	mutex_lock(&ar->conf_mutex);
 	ath10k_mac_vif_ap_csa_count_down(arvif);
 	mutex_unlock(&ar->conf_mutex);
+}
+
+static void ath10k_mac_handle_beacon_iter(void *data, u8 *mac,
+					  struct ieee80211_vif *vif)
+{
+	struct sk_buff *skb = data;
+	struct ieee80211_mgmt *mgmt = (void *)skb->data;
+	struct ath10k_vif *arvif = ath10k_vif_to_arvif(vif);
+
+	if (vif->type != NL80211_IFTYPE_STATION)
+		return;
+
+	if (!ether_addr_equal(mgmt->bssid, vif->bss_conf.bssid))
+		return;
+
+	cancel_delayed_work(&arvif->connection_loss_work);
+}
+
+void ath10k_mac_handle_beacon(struct ath10k *ar, struct sk_buff *skb)
+{
+	ieee80211_iterate_active_interfaces_atomic(ar->hw,
+						   IEEE80211_IFACE_ITER_NORMAL,
+						   ath10k_mac_handle_beacon_iter,
+						   skb);
+}
+
+static void ath10k_mac_handle_beacon_miss_iter(void *data, u8 *mac,
+					       struct ieee80211_vif *vif)
+{
+	u32 *vdev_id = data;
+	struct ath10k_vif *arvif = ath10k_vif_to_arvif(vif);
+	struct ath10k *ar = arvif->ar;
+	struct ieee80211_hw *hw = ar->hw;
+
+	if (arvif->vdev_id != *vdev_id)
+		return;
+
+	if (!arvif->is_up)
+		return;
+
+	ieee80211_beacon_loss(vif);
+
+	/* Firmware doesn't report beacon loss events repeatedly. If AP probe
+	 * (done by mac80211) succeeds but beacons do not resume then it
+	 * doesn't make sense to continue operation. Queue connection loss work
+	 * which can be cancelled when beacon is received.
+	 */
+	ieee80211_queue_delayed_work(hw, &arvif->connection_loss_work,
+				     ATH10K_CONNECTION_LOSS_HZ);
+}
+
+void ath10k_mac_handle_beacon_miss(struct ath10k *ar, u32 vdev_id)
+{
+	ieee80211_iterate_active_interfaces_atomic(ar->hw,
+						   IEEE80211_IFACE_ITER_NORMAL,
+						   ath10k_mac_handle_beacon_miss_iter,
+						   &vdev_id);
+}
+
+static void ath10k_mac_vif_sta_connection_loss_work(struct work_struct *work)
+{
+	struct ath10k_vif *arvif = container_of(work, struct ath10k_vif,
+						connection_loss_work.work);
+	struct ieee80211_vif *vif = arvif->vif;
+
+	if (!arvif->is_up)
+		return;
+
+	ieee80211_connection_loss(vif);
 }
 
 /**********************/
@@ -2092,9 +2167,7 @@ static void ath10k_bss_assoc(struct ieee80211_hw *hw,
 		return;
 	}
 
-	spin_lock_bh(&arvif->ar->data_lock);
 	arvif->is_up = true;
-	spin_unlock_bh(&arvif->ar->data_lock);
 
 	/* Workaround: Some firmware revisions (tested with qca6174
 	 * WLAN.RM.2.0-00073) have buggy powersave state machine and must be
@@ -2136,9 +2209,9 @@ static void ath10k_bss_disassoc(struct ieee80211_hw *hw,
 		return;
 	}
 
-	spin_lock_bh(&arvif->ar->data_lock);
 	arvif->is_up = false;
-	spin_unlock_bh(&arvif->ar->data_lock);
+
+	cancel_delayed_work_sync(&arvif->connection_loss_work);
 }
 
 static int ath10k_station_assoc(struct ath10k *ar,
@@ -3377,6 +3450,8 @@ static int ath10k_add_interface(struct ieee80211_hw *hw,
 
 	INIT_LIST_HEAD(&arvif->list);
 	INIT_WORK(&arvif->ap_csa_work, ath10k_mac_vif_ap_csa_work);
+	INIT_DELAYED_WORK(&arvif->connection_loss_work,
+			  ath10k_mac_vif_sta_connection_loss_work);
 
 	if (ar->free_vdev_map == 0) {
 		ath10k_warn(ar, "Free vdev map is empty, no more interfaces allowed.\n");
@@ -3595,6 +3670,7 @@ static void ath10k_remove_interface(struct ieee80211_hw *hw,
 	int ret;
 
 	cancel_work_sync(&arvif->ap_csa_work);
+	cancel_delayed_work_sync(&arvif->connection_loss_work);
 
 	mutex_lock(&ar->conf_mutex);
 
@@ -3995,6 +4071,10 @@ static int ath10k_set_key(struct ieee80211_hw *hw, enum set_key_cmd cmd,
 	int ret = 0;
 	u32 flags = 0;
 
+	/* this one needs to be done in software */
+	if (key->cipher == WLAN_CIPHER_SUITE_AES_CMAC)
+		return 1;
+
 	if (key->keyidx > WMI_MAX_KEY_INDEX)
 		return -ENOSPC;
 
@@ -4028,6 +4108,11 @@ static int ath10k_set_key(struct ieee80211_hw *hw, enum set_key_cmd cmd,
 		}
 	}
 
+	if (key->flags & IEEE80211_KEY_FLAG_PAIRWISE)
+		flags |= WMI_KEY_PAIRWISE;
+	else
+		flags |= WMI_KEY_GROUP;
+
 	if (is_wep) {
 		if (cmd == SET_KEY)
 			arvif->wep_keys[key->keyidx] = key;
@@ -4053,29 +4138,24 @@ static int ath10k_set_key(struct ieee80211_hw *hw, enum set_key_cmd cmd,
 		 */
 		if (cmd == SET_KEY && arvif->def_wep_key_idx == -1)
 			flags |= WMI_KEY_TX_USAGE;
-	}
 
-	if (key->flags & IEEE80211_KEY_FLAG_PAIRWISE)
-		flags |= WMI_KEY_PAIRWISE;
-	else
-		flags |= WMI_KEY_GROUP;
-
-	/* mac80211 uploads static WEP keys as groupwise while fw/hw requires
-	 * pairwise keys for non-self peers, i.e. BSSID in STA mode and
-	 * associated stations in AP/IBSS.
-	 *
-	 * Static WEP keys for peer_addr=vif->addr and 802.1X WEP keys work
-	 * fine when mapped directly from mac80211.
-	 *
-	 * Note: When installing first static WEP groupwise key (which should
-	 * be pairwise) def_wep_key_idx isn't known yet (it's equal to -1).
-	 * Since .set_default_unicast_key is called only for static WEP it's
-	 * used to re-upload the key as pairwise.
-	 */
-	if (arvif->def_wep_key_idx >= 0 &&
-	    memcmp(peer_addr, arvif->vif->addr, ETH_ALEN)) {
-		flags &= ~WMI_KEY_GROUP;
-		flags |= WMI_KEY_PAIRWISE;
+		/* mac80211 uploads static WEP keys as groupwise while fw/hw
+		 * requires pairwise keys for non-self peers, i.e. BSSID in STA
+		 * mode and associated stations in AP/IBSS.
+		 *
+		 * Static WEP keys for peer_addr=vif->addr and 802.1X WEP keys
+		 * work fine when mapped directly from mac80211.
+		 *
+		 * Note: When installing first static WEP groupwise key (which
+		 * should be pairwise) def_wep_key_idx isn't known yet (it's
+		 * equal to -1).  Since .set_default_unicast_key is called only
+		 * for static WEP it's used to re-upload the key as pairwise.
+		 */
+		if (arvif->def_wep_key_idx >= 0 &&
+		    memcmp(peer_addr, arvif->vif->addr, ETH_ALEN)) {
+			flags &= ~WMI_KEY_GROUP;
+			flags |= WMI_KEY_PAIRWISE;
+		}
 	}
 
 	ret = ath10k_install_key(arvif, key, cmd, peer_addr, flags);
@@ -5726,7 +5806,8 @@ int ath10k_mac_register(struct ath10k *ar)
 			IEEE80211_HW_HAS_RATE_CONTROL |
 			IEEE80211_HW_AP_LINK_PS |
 			IEEE80211_HW_SPECTRUM_MGMT |
-			IEEE80211_HW_SW_CRYPTO_CONTROL;
+			IEEE80211_HW_SW_CRYPTO_CONTROL |
+			IEEE80211_HW_CONNECTION_MONITOR;
 
 	ar->hw->wiphy->features |= NL80211_FEATURE_STATIC_SMPS;
 
