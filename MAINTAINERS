@@ -8334,7 +8334,6 @@ F:	block/partitions/ibm.c
 
 S390 NETWORK DRIVERS
 M:	Ursula Braun <ursula.braun@de.ibm.com>
-M:	Frank Blaschka <blaschka@linux.vnet.ibm.com>
 M:	linux390@de.ibm.com
 L:	linux-s390@vger.kernel.org
 W:	http://www.ibm.com/developerworks/linux/linux390/
@@ -8479,6 +8478,14 @@ M:	Vipul Pandya <vipul.pandya@samsung.com>
 S:	Supported
 L:	netdev@vger.kernel.org
 F:	drivers/net/ethernet/samsung/sxgbe/
+
+SAMSUNG THERMAL DRIVER
+M:	Lukasz Majewski <l.majewski@samsung.com>
+L:	linux-pm@vger.kernel.org
+L:	linux-samsung-soc@vger.kernel.org
+S:	Supported
+T:	https://github.com/lmajewski/linux-samsung-thermal.git
+F:	drivers/thermal/samsung/
 
 SAMSUNG USB2 PHY DRIVER
 M:	Kamil Debski <k.debski@samsung.com>
