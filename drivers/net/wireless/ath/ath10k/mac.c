@@ -5804,6 +5804,8 @@ int ath10k_mac_register(struct ath10k *ar)
 		goto err_free;
 	}
 
+	ar->hw->wiphy->max_ap_assoc_sta = ar->max_num_stations;
+
 	/*
 	 * on LL hardware queues are managed entirely by the FW
 	 * so we only advertise to mac we can do the queues thing
