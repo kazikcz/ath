@@ -268,6 +268,7 @@ static int inet_csk_wait_for_connect(struct sock *sk, long timeo)
 		release_sock(sk);
 		if (reqsk_queue_empty(&icsk->icsk_accept_queue))
 			timeo = schedule_timeout(timeo);
+		sched_annotate_sleep();
 		lock_sock(sk);
 		err = 0;
 		if (!reqsk_queue_empty(&icsk->icsk_accept_queue))
@@ -678,6 +679,8 @@ struct sock *inet_csk_clone_lock(const struct sock *sk,
 		newsk->sk_write_space = sk_stream_write_space;
 
 		newsk->sk_mark = inet_rsk(req)->ir_mark;
+		atomic64_set(&newsk->sk_cookie,
+			     atomic64_read(&inet_rsk(req)->ir_cookie));
 
 		newicsk->icsk_retransmits = 0;
 		newicsk->icsk_backoff	  = 0;

@@ -464,6 +464,7 @@ struct ieee80211_if_managed {
 	unsigned int flags;
 
 	bool csa_waiting_bcn;
+	bool csa_ignored_same_chan;
 
 	bool beacon_crc_valid;
 	u32 beacon_crc;
@@ -828,8 +829,6 @@ struct ieee80211_sub_if_data {
 	unsigned int flags;
 
 	unsigned long state;
-
-	int drop_unencrypted;
 
 	char name[IFNAMSIZ];
 
@@ -1272,7 +1271,6 @@ struct ieee80211_local {
 	/* TX/RX handler statistics */
 	unsigned int tx_handlers_drop;
 	unsigned int tx_handlers_queued;
-	unsigned int tx_handlers_drop_unencrypted;
 	unsigned int tx_handlers_drop_fragment;
 	unsigned int tx_handlers_drop_wep;
 	unsigned int tx_handlers_drop_not_assoc;
@@ -1757,7 +1755,8 @@ void mac80211_ev_michael_mic_failure(struct ieee80211_sub_if_data *sdata, int ke
 				     gfp_t gfp);
 void ieee80211_set_wmm_default(struct ieee80211_sub_if_data *sdata,
 			       bool bss_notify);
-void ieee80211_xmit(struct ieee80211_sub_if_data *sdata, struct sk_buff *skb);
+void ieee80211_xmit(struct ieee80211_sub_if_data *sdata,
+		    struct sta_info *sta, struct sk_buff *skb);
 
 void __ieee80211_tx_skb_tid_band(struct ieee80211_sub_if_data *sdata,
 				 struct sk_buff *skb, int tid,

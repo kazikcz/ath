@@ -745,6 +745,18 @@ struct ieee80211_vif *wdev_to_ieee80211_vif(struct wireless_dev *wdev)
 }
 EXPORT_SYMBOL_GPL(wdev_to_ieee80211_vif);
 
+struct wireless_dev *ieee80211_vif_to_wdev(struct ieee80211_vif *vif)
+{
+	struct ieee80211_sub_if_data *sdata = vif_to_sdata(vif);
+
+	if (!ieee80211_sdata_running(sdata) ||
+	    !(sdata->flags & IEEE80211_SDATA_IN_DRIVER))
+		return NULL;
+
+	return &sdata->wdev;
+}
+EXPORT_SYMBOL_GPL(ieee80211_vif_to_wdev);
+
 /*
  * Nothing should have been stuffed into the workqueue during
  * the suspend->resume cycle. Since we can't check each caller
@@ -3233,7 +3245,7 @@ int ieee80211_check_combinations(struct ieee80211_sub_if_data *sdata,
 		wdev_iter = &sdata_iter->wdev;
 
 		if (sdata_iter == sdata ||
-		    rcu_access_pointer(sdata_iter->vif.chanctx_conf) == NULL ||
+		    !ieee80211_sdata_running(sdata_iter) ||
 		    local->hw.wiphy->software_iftypes & BIT(wdev_iter->iftype))
 			continue;
 
